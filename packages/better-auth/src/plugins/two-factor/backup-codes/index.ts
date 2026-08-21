@@ -4,7 +4,11 @@ import { safeJSONParse } from "@better-auth/core/utils/json";
 import * as z from "zod";
 import { sessionMiddleware } from "../../../api";
 import type { SecretConfig } from "../../../crypto";
-import { symmetricDecrypt, symmetricEncrypt } from "../../../crypto";
+import {
+	constantTimeEqual,
+	symmetricDecrypt,
+	symmetricEncrypt,
+} from "../../../crypto";
 import { generateRandomString } from "../../../crypto/random";
 import { parseUserOutput } from "../../../db/schema";
 import { shouldRequirePassword } from "../../../utils/password";
@@ -115,9 +119,26 @@ export async function verifyBackupCode(
 			updated: null,
 		};
 	}
+	// Compare against every stored code without an early exit. `includes`
+	// short-circuits twice: it stops scanning once a code matches, and each `===`
+	// stops at the first differing character, so both the matching code's
+	// position and a wrong guess's shared prefix length are observable in the
+	// response time. `isRedeemedCode` is guarded on `typeof code === "string"`
+	// because `getBackupCodes` asserts `string[]` through `safeJSONParse`
+	// without validating it, so a corrupted column can yield other types.
+	const isRedeemedCode = (code: unknown) =>
+		typeof code === "string" && constantTimeEqual(code, data.code);
+
+	let status = false;
+	for (const code of codes) {
+		if (isRedeemedCode(code)) {
+			status = true;
+		}
+	}
+
 	return {
-		status: codes.includes(data.code),
-		updated: codes.filter((code) => code !== data.code),
+		status,
+		updated: codes.filter((code) => !isRedeemedCode(code)),
 	};
 }
 
